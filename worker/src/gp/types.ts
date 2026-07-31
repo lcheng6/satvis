@@ -67,6 +67,15 @@ export interface GroupDefinition {
   // Served at /api/gp/<name>.json — must match ^[a-zA-Z0-9_-]+$.
   name: string;
   sources?: SourceSpec[];
+  // Sources of CelesTrak SATCAT records, read ONLY for their LAUNCH_DATE, which
+  // is then attached to matching records as `metadata.launchDate`. Nothing from
+  // here is ever served: a satcat record is not an element set.
+  //
+  // A launch date cannot be derived from element sets — a TLE propagates
+  // backwards past its own launch perfectly happily — so without this a
+  // satellite is drawn at simulation times before it existed. Only needed for
+  // satellites whose element-set history cannot answer the question itself.
+  satcatSources?: SourceSpec[];
   select?: GroupSelect;
   // Per-satellite rows, unioned with `select`. A row matches by noradId when
   // present, else by exact upstreamName. A row's `name` renames the records it

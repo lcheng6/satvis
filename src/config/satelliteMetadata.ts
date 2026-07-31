@@ -27,6 +27,28 @@ export interface SatelliteMetadata {
   // Display-only, free text, shown verbatim in the entity info panel.
   operator?: string;
   missionType?: string;
+  // Date the satellite reached orbit (CelesTrak SATCAT LAUNCH_DATE, attached at
+  // refresh time). A satellite is not drawn at a simulation time before it.
+  //
+  // Not derivable from an element set — a TLE propagates backwards past its own
+  // launch perfectly happily — and not the same as the first epoch the elset
+  // history holds, which can be months later.
+  launchDate?: string;
+}
+
+/**
+ * True when this satellite had not reached orbit at `timeMs`.
+ *
+ * False when no launch date is recorded: absence of the fact is not evidence
+ * the satellite did not exist, and hiding on a missing field would blank every
+ * satellite whose group has no satcat source.
+ */
+export function launchedAfter(metadata: SatelliteMetadata, timeMs: number): boolean {
+  if (metadata.launchDate === undefined) {
+    return false;
+  }
+  const launchMs = Date.parse(metadata.launchDate);
+  return Number.isFinite(launchMs) && timeMs < launchMs;
 }
 
 // Total swath width for a satellite with no extents of its own. Kept as a total

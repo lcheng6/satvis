@@ -45,8 +45,17 @@ the SPA and the `worker/` package.
 
 ### Run
 
-- `pnpm dev` for the dev server (proxies `/api` to <https://satvis.space>, so
-  satellite data works without a local worker)
+The app is two processes: the **frontend** (Vite, `:5173`) and the **backend**
+(the Cloudflare Worker via Wrangler, `:8080`). The frontend never imports the
+worker — it calls it over HTTP through a Vite proxy.
+
+**Frontend only** — the quickest start. `/api` is proxied to
+<https://satvis.space>, so satellite data works with no local worker:
+
+```
+pnpm dev
+```
+
 - `pnpm dev:host` to expose the dev server on the local network
 - `pnpm build` to build the application (output in `dist` folder)
 - `pnpm preview` to preview the production build locally
@@ -54,15 +63,29 @@ the SPA and the `worker/` package.
 
 ### Full-stack dev (with the worker)
 
-To run the frontend against a local worker instead of the deployed API:
+Use this whenever you change anything under `worker/` — including group config
+in `satvis.core.yaml`, whose groups do **not** exist on the deployed API.
 
 ```
-pnpm dev:worker                                     # wrangler dev on :8080
-SATVIS_API_PROXY=http://localhost:8080 pnpm dev     # frontend proxies /api → local worker
+mkdir -p dist                                       # wrangler's assets binding needs it to exist
+
+pnpm dev:worker                                     # terminal 1 — wrangler dev on :8080
+SATVIS_API_PROXY=http://localhost:8080 pnpm dev     # terminal 2 — frontend proxies /api → local worker
 ```
 
-The worker's cron trigger fills Workers KV. To run it once locally (wrangler
-dev is started with `--test-scheduled`), hit the scheduled endpoint:
+> [!IMPORTANT]
+> Without `SATVIS_API_PROXY`, `pnpm dev` talks to **production**, not to the
+> worker you just started. The app looks healthy while ignoring your changes;
+> a group you added locally shows up as `0/0` in the satellite browser.
+
+Workers KV starts **empty**, so `/api/gp/<group>.json` 404s until it is filled
+once. Either trigger a refresh directly:
+
+```
+curl -X POST http://localhost:8080/api/refresh
+```
+
+or run the cron once (wrangler dev is started with `--test-scheduled`):
 
 ```
 curl "http://localhost:8080/__scheduled?cron=23+*%2F3+*+*+*"
@@ -70,6 +93,60 @@ curl "http://localhost:8080/__scheduled?cron=23+*%2F3+*+*+*"
 
 Then `GET /api/groups.json` lists the refreshed groups and
 `GET /api/gp/starlink.json` returns an OMM element-set array.
+
+The whole sequence, to copy:
+
+```sh
+mkdir -p dist                                       # once
+pnpm dev:worker                                     # terminal 1 → :8080
+SATVIS_API_PROXY=http://localhost:8080 pnpm dev     # terminal 2 → :5173
+curl -X POST http://localhost:8080/api/refresh      # KV starts empty
+pnpm doctor                                         # confirm every layer
+```
+
+### Stopping
+
+Ctrl-C in each terminal. **Check nothing survived**, though — stopping Wrangler
+does not always reap its `workerd` child, which leaves a process holding the
+port, so the next `pnpm dev:worker` starts against a port that looks free and
+misbehaves:
+
+```sh
+pgrep -fl "wrangler dev|workerd|vite"    # expect no output
+```
+
+Anything left over:
+
+```sh
+pkill -f "wrangler dev"; pkill -f workerd; pkill -f vite
+```
+
+### Checking the setup
+
+```
+pnpm doctor
+```
+
+Read-only; it starts and repairs nothing. It checks, in the order that makes the
+first failure the root cause: submodules / `dist/` / `worker/.dev.vars`, the
+worker and whether KV actually holds records, the frontend, **whether `/api` is
+proxied to your local worker or to production**, and the Databricks connection.
+Each failure prints the command that fixes it, and the exit code is non-zero if
+any hard check failed (warnings describe a setup that still runs).
+
+```
+pnpm doctor --no-databricks     # skip the slow warehouse probe
+SATVIS_API_URL=… SATVIS_WEB_URL=… pnpm doctor    # non-default ports
+```
+
+### Databricks (optional)
+
+The worker can serve element sets from a Unity Catalog SCD2 table, so that
+pinning the simulation clock propagates each satellite from the element set that
+was current at that moment. It is **off unless configured**, and the CelesTrak
+path is unaffected. Copy `worker/.dev.vars.example` to `worker/.dev.vars` and
+fill it in; see the "Databricks configuration" section of `AGENTS.md` for what
+each variable does and how element sets are selected by time.
 
 ## Satellite data
 

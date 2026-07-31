@@ -7,6 +7,17 @@ import { defineConfig } from "vitest/config";
 const emptyAssets = path.join(path.dirname(fileURLToPath(import.meta.url)), "test", "fixtures", "empty-assets");
 
 export default defineConfig({
+  test: {
+    // A full refresh is deliberately sequential and rate-limited (250ms between
+    // sources, see evaluate.ts), so the refresh tests take roughly
+    // sources × 250ms — already past vitest's 5s default, and growing with every
+    // source added to satvis.core.yaml. Worth raising rather than parallelizing:
+    // the spacing is what keeps the real worker from hammering CelesTrak, and a
+    // test that skipped it would stop exercising the real path. A timed-out
+    // refresh also keeps running and its fetches leak into the next test's spy,
+    // so the failure lands far from its cause.
+    testTimeout: 30_000,
+  },
   plugins: [
     cloudflareTest({
       wrangler: { configPath: "./wrangler.jsonc" },

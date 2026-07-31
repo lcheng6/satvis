@@ -37,10 +37,14 @@ export function sourceUrl(spec: SourceSpec): string {
 }
 
 // Collect every distinct source across all group definitions (dedup by key).
+//
+// Includes satcatSources: they are fetched by the same rate-limited path as
+// element-set sources, and only the *reading* differs — evaluateGroups looks at
+// `def.sources` alone, so a satcat payload can never become a served record.
 export function collectSources(defs: GroupDefinition[]): SourceSpec[] {
   const seen = new Map<string, SourceSpec>();
   for (const def of defs) {
-    for (const spec of def.sources ?? []) {
+    for (const spec of [...(def.sources ?? []), ...(def.satcatSources ?? [])]) {
       const key = sourceKey(spec);
       if (!seen.has(key)) {
         seen.set(key, spec);
@@ -531,6 +535,33 @@ export function indexSatellitesByNoradId(entries: SatelliteEntry[]): Map<string,
   return new Map(entries.map((entry) => [String(entry.noradId), entry]));
 }
 
+// satnum -> launch date, from every group's fetched satcat sources.
+//
+// Keyed the same way records are enriched (normalized satnum), so a satcat
+// record listing 00005 and an element set listing 5 meet. A failed satcat fetch
+// contributes nothing rather than failing the group: a missing launch date
+// costs visibility correctness before launch, not the satellite itself.
+export function buildLaunchDates(defs: GroupDefinition[], recordsBySource: RecordsBySource): Map<string, string> {
+  const launchDates = new Map<string, string>();
+  for (const def of defs) {
+    for (const spec of def.satcatSources ?? []) {
+      const fetched = recordsBySource.get(sourceKey(spec));
+      if (fetched === undefined || fetched instanceof Error) {
+        console.warn(`gp refresh: ${def.name}: satcat source ${sourceKey(spec)} unavailable — launch dates from it are missing`);
+        continue;
+      }
+      for (const record of fetched) {
+        const satnum = enrichmentSatnum(record);
+        const launchDate = record["LAUNCH_DATE"];
+        if (satnum !== "" && typeof launchDate === "string" && launchDate !== "") {
+          launchDates.set(satnum, launchDate);
+        }
+      }
+    }
+  }
+  return launchDates;
+}
+
 // Attach each matching table entry's metadata to a copy of the record, under the
 // lowercase `metadata` key (lowercase to stand apart from the SCREAMING_SNAKE
 // CCSDS fields, and because CelesTrak emits no lowercase keys — so it cannot
@@ -540,19 +571,31 @@ export function indexSatellitesByNoradId(entries: SatelliteEntry[]): Map<string,
 // at all: the frontend applies its own defaults, so enriching all ~10,000 records
 // with a default bag would inflate every payload to say nothing. The returned
 // satnum set lets the caller report entries that matched nothing anywhere.
-export function enrichRecords(records: GpRecord[], table: Map<string, SatelliteEntry>): { records: GpRecord[]; matched: Set<string> } {
+export function enrichRecords(
+  records: GpRecord[],
+  table: Map<string, SatelliteEntry>,
+  launchDates: Map<string, string> = new Map(),
+): { records: GpRecord[]; matched: Set<string> } {
   const matched = new Set<string>();
-  if (table.size === 0) {
+  if (table.size === 0 && launchDates.size === 0) {
     return { records, matched };
   }
   const out = records.map((record) => {
     const satnum = enrichmentSatnum(record);
     const entry = table.get(satnum);
-    if (entry === undefined) {
+    const launchDate = launchDates.get(satnum);
+    if (entry === undefined && launchDate === undefined) {
       return record;
     }
-    matched.add(satnum);
-    return { ...record, metadata: entry.metadata };
+    // `matched` reports the *table*'s reach only — it drives the config-health
+    // warning about table entries matching nothing, and a satcat hit says
+    // nothing about that.
+    if (entry !== undefined) {
+      matched.add(satnum);
+    }
+    // The table's own launchDate, if a config ever sets one, stays authoritative
+    // over the fetched satcat value: config is the deliberate override.
+    return { ...record, metadata: { ...(launchDate === undefined ? {} : { launchDate }), ...entry?.metadata } };
   });
   return { records: out, matched };
 }

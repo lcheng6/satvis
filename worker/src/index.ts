@@ -2,8 +2,8 @@ import { handleApi } from "./gp/api.ts";
 import { refreshAll } from "./gp/refresh.ts";
 
 export default {
-  async fetch(request: Request, env: Env): Promise<Response> {
-    const apiResponse = await handleApi(request, env);
+  async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
+    const apiResponse = await handleApi(request, env, ctx);
     if (apiResponse !== null) {
       return apiResponse;
     }

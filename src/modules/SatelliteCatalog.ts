@@ -23,7 +23,14 @@ export class CatalogEntry {
   // Mutable: addRecords reassigns it when merging tags across groups.
   tags: string[];
 
-  readonly record: GpRecord;
+  // The element set as served by the group. Never replaced — a time-appropriate
+  // override is held beside it, so returning to live time is just dropping the
+  // override rather than refetching the group.
+  readonly baseRecord: GpRecord;
+
+  // A time-appropriate element set from Databricks, when one is in force.
+  // See src/modules/util/elsetWindow.ts.
+  #override: GpRecord | undefined;
 
   constructor(fields: { key: string; name: string; nameUpper: string; satnum: string; tags: string[]; record: GpRecord }) {
     this.key = fields.key;
@@ -31,15 +38,51 @@ export class CatalogEntry {
     this.nameUpper = fields.nameUpper;
     this.satnum = fields.satnum;
     this.tags = fields.tags;
-    this.record = fields.record;
+    this.baseRecord = fields.record;
+  }
+
+  // The element set in force. Everything downstream (Orbit, the info panel)
+  // reads this, so an override reaches all of them without any of them needing
+  // to know that overrides exist.
+  get record(): GpRecord {
+    return this.#override ?? this.baseRecord;
+  }
+
+  get hasRecordOverride(): boolean {
+    return this.#override !== undefined;
+  }
+
+  /**
+   * Put an element set in force, or drop back to the group's own with
+   * `undefined`. Returns true when the effective record actually changed, so a
+   * caller only rebuilds the satellites that really need it.
+   */
+  setRecordOverride(record: GpRecord | undefined): boolean {
+    if (record === undefined) {
+      const had = this.#override !== undefined;
+      this.#override = undefined;
+      return had;
+    }
+    const current = this.#override;
+    // Compared by the element set itself, not by identity: the same two lines
+    // arriving again — a refetched window, or a scrub landing on the same epoch
+    // — must not count as a change, or every fetch would rebuild everything.
+    if (current?.kind === "tle" && record.kind === "tle" && current.line1 === record.line1 && current.line2 === record.line2) {
+      return false;
+    }
+    this.#override = record;
+    return true;
   }
 
   // Static per-satellite facts (swath extents, cone FOV, model URL, operator),
   // attached to the record by the worker at refresh time. Empty for a satellite
-  // absent from the satellite table — consumers apply their own defaults. No
-  // resolution or memoization: the record either carries the bag or it does not.
+  // absent from the satellite table — consumers apply their own defaults.
+  //
+  // Falls back to the base record because an override is a bare element set:
+  // Databricks knows a satellite's TLE, not its swath, and swapping one in must
+  // not cost the satellite its metadata.
   get metadata(): SatelliteMetadata {
-    return this.record.metadata ?? {};
+    return this.record.metadata ?? this.baseRecord.metadata ?? {};
   }
 }
 
@@ -231,6 +274,37 @@ export class SatelliteCatalog {
 
   entriesWithTag(tag: string): CatalogEntry[] {
     return [...(this.#byTag.get(tag) ?? [])];
+  }
+
+  entriesWithSatnum(satnum: string): CatalogEntry[] {
+    return [...(this.#bySatnum.get(satnum) ?? [])];
+  }
+
+  /**
+   * Put a time-appropriate element set in force per satnum, and drop the
+   * override from every entry not named — so this is the whole override state,
+   * not an addition to it, and going back to live time is `applyRecordOverrides
+   * (new Map())`.
+   *
+   * Returns the keys whose effective record changed: exactly the satellites
+   * whose live Cesium objects have to be rebuilt.
+   */
+  applyRecordOverrides(bySatnum: ReadonlyMap<string, GpRecord>): string[] {
+    const changed: string[] = [];
+    for (const [satnum, entries] of this.#bySatnum) {
+      const record = bySatnum.get(satnum);
+      for (const entry of entries) {
+        // Cheap exit for the overwhelming majority: no override wanted, none
+        // held. Without it every scrub would walk all ~10k entries doing work.
+        if (record === undefined && !entry.hasRecordOverride) {
+          continue;
+        }
+        if (entry.setRecordOverride(record)) {
+          changed.push(entry.key);
+        }
+      }
+    }
+    return changed;
   }
 
   getByName(name: string): CatalogEntry | undefined {

@@ -32,6 +32,13 @@ export interface ActivationState {
   disabledSatellites?: readonly string[];
   trackedName?: string;
   pendingTrackedName?: string;
+  // Satnums with no element set valid at the simulation time — either the
+  // satellite had not launched yet, or no row's SCD2 validity interval covers
+  // that instant. Unlike every other input here this is a fact about the data
+  // rather than a thing the user asked for, so it beats all of them: there is
+  // nothing to propagate, however the satellite was enabled.
+  // See src/modules/util/elsetWindow.ts.
+  hiddenSatnums?: ReadonlySet<string>;
 }
 
 // The single definition of "enabled via some tag" — also used by the
@@ -48,9 +55,15 @@ export function activeTargetEntries(state: ActivationState): Map<string, Catalog
   const enabledTags = new Set(state.enabledTags);
   const enabledSatellites = new Set(state.enabledSatellites);
   const disabledSatellites = new Set(state.disabledSatellites ?? []);
+  const hidden = state.hiddenSatnums;
   const target = new Map<string, CatalogEntry>();
 
   for (const entry of state.entries) {
+    // Checked before the enable rules, not after: with no element set valid at
+    // this time there is nothing to propagate, so tracking cannot rescue it.
+    if (hidden?.has(entry.satnum)) {
+      continue;
+    }
     const enabledByTag = isEnabledByTag(entry, enabledTags) && !disabledSatellites.has(entry.name);
     const enabledByName = enabledSatellites.has(entry.name);
     const enabledByTrack = entry.name === state.trackedName || entry.name === state.pendingTrackedName;

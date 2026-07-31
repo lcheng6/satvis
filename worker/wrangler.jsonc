@@ -27,6 +27,22 @@
     "run_worker_first": ["/api/*", "/__scheduled"],
   },
   "kv_namespaces": [{ "binding": "GP_KV", "id": "26a7848ab641416fa518a3df4790a968" }],
+  // Databricks connection. Empty here on purpose: with all three of HOST /
+  // WAREHOUSE_ID / TOKEN blank the integration reports itself "not configured"
+  // and the worker keeps serving CelesTrak data unchanged. Set the two vars
+  // below per environment (or in worker/.dev.vars for local dev) and the token
+  // with `wrangler secret put DATABRICKS_TOKEN` — never as a var, which would
+  // put it in plaintext in this file. Setting only some of them is a loud
+  // failure, not a silent downgrade (see src/databricks/config.ts).
+  "vars": {
+    "DATABRICKS_HOST": "",
+    "DATABRICKS_WAREHOUSE_ID": "",
+    // Overrides the SCD2 elset view; blank uses DEFAULT_ELSET_TABLE.
+    "DATABRICKS_ELSET_TABLE": "",
+    // "1" exposes GET /api/databricks/probe. Off in production: the endpoint is
+    // unauthenticated and every call spins a metered SQL warehouse.
+    "DATABRICKS_PROBE": "0",
+  },
   "triggers": {
     // Every 3 h at :23 (>= CelesTrak's ~2 h refresh guidance, off-hour minute).
     "crons": ["23 */3 * * *"],

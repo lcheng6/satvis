@@ -1,0 +1,23 @@
+# Local-only Worker environment. Copy to worker/.dev.vars (gitignored) and fill
+# in. `wrangler dev` loads .dev.vars automatically; production uses
+# `wrangler secret put DATABRICKS_TOKEN` plus vars in wrangler.jsonc.
+#
+# Leave every DATABRICKS_* value blank to run the worker without Databricks —
+# the GP pipeline is unaffected. Setting only some of them is a hard error.
+
+# Workspace URL, no trailing slash, e.g. https://dbc-xxxxxxxx-xxxx.cloud.databricks.com
+DATABRICKS_HOST=
+
+# SQL warehouse to run statements on (Databricks UI -> SQL Warehouses -> Connection details).
+DATABRICKS_WAREHOUSE_ID=
+
+# A personal access token, or an OAuth access token. Treat as a password.
+# To mint a PAT from a configured CLI profile without printing it:
+#   databricks auth token -p <profile> | jq -r .access_token
+DATABRICKS_TOKEN=
+
+# Optional: override the SCD2 element-set view (blank uses the built-in default).
+DATABRICKS_ELSET_TABLE=
+
+# "1" exposes GET /api/databricks/probe. Local only.
+DATABRICKS_PROBE=1

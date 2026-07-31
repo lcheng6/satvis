@@ -234,3 +234,66 @@ describe("SatelliteCatalog lazy loading", () => {
     expect(catalog.getByName("METEO-1")).toBeDefined();
   });
 });
+
+describe("record overrides", () => {
+  const TLE1 = "1 61047U 24163C   26209.07670880 +.00000291 +00000+0 +27807-4 0 99997";
+  const TLE2 = "2 61047  52.9688 116.5418 0006088 238.0390 122.0013 15.20690064104132";
+  const OTHER1 = "1 61047U 24163C   26210.06254632 -.00000042 +00000+0 +12824-4 0 99999";
+
+  function seeded(): SatelliteCatalog {
+    const catalog = new SatelliteCatalog();
+    catalog.addRecords([{ ...ommRecord("SAT-A", 5), metadata: { swathStarboardKm: 100, swathPortKm: 100 } }, ommRecord("SAT-B", 6)], ["Test"]);
+    return catalog;
+  }
+
+  function override(line1 = TLE1): GpRecord {
+    return { kind: "tle", name: "5", line1, line2: TLE2 };
+  }
+
+  test("an override becomes the record in force, leaving the base intact", () => {
+    const catalog = seeded();
+    const changed = catalog.applyRecordOverrides(new Map([["5", override()]]));
+    expect(changed).toEqual(["5|SAT-A"]);
+
+    const entry = catalog.getByName("SAT-A")!;
+    expect(entry.hasRecordOverride).toBe(true);
+    expect(entry.record).toEqual(override());
+    expect(entry.baseRecord.kind).toBe("omm");
+  });
+
+  test("metadata survives an override, which carries none of its own", () => {
+    // Databricks knows a satellite's element set, not its swath — swapping one
+    // in must not cost the satellite its metadata.
+    const catalog = seeded();
+    catalog.applyRecordOverrides(new Map([["5", override()]]));
+    expect(catalog.getByName("SAT-A")!.metadata).toEqual({ swathStarboardKm: 100, swathPortKm: 100 });
+  });
+
+  test("re-applying the same element set reports no change", () => {
+    // Otherwise every refetched window would rebuild every satellite.
+    const catalog = seeded();
+    expect(catalog.applyRecordOverrides(new Map([["5", override()]]))).toEqual(["5|SAT-A"]);
+    expect(catalog.applyRecordOverrides(new Map([["5", override()]]))).toEqual([]);
+  });
+
+  test("a different element set for the same satellite is a change", () => {
+    const catalog = seeded();
+    catalog.applyRecordOverrides(new Map([["5", override()]]));
+    expect(catalog.applyRecordOverrides(new Map([["5", override(OTHER1)]]))).toEqual(["5|SAT-A"]);
+  });
+
+  test("the map is the whole override state, so omitting a satellite clears it", () => {
+    const catalog = seeded();
+    catalog.applyRecordOverrides(new Map([["5", override()]]));
+    expect(catalog.applyRecordOverrides(new Map())).toEqual(["5|SAT-A"]);
+    const entry = catalog.getByName("SAT-A")!;
+    expect(entry.hasRecordOverride).toBe(false);
+    expect(entry.record).toBe(entry.baseRecord);
+  });
+
+  test("satellites without an override are untouched", () => {
+    const catalog = seeded();
+    catalog.applyRecordOverrides(new Map([["5", override()]]));
+    expect(catalog.getByName("SAT-B")!.hasRecordOverride).toBe(false);
+  });
+});

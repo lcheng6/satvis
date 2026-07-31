@@ -242,7 +242,72 @@ export class SatelliteManager {
       disabledSatellites: this.#desired.disabledSatellites,
       trackedName: this.trackedSatellite || undefined,
       pendingTrackedName: this.pendingTrackedSatellite,
+      hiddenSatnums: this.#hiddenSatnums,
     });
+  }
+
+  // Satnums with no element set valid at the simulation time. Owned here rather
+  // than in DesiredScene because it is not something the store decides — it
+  // falls out of the element-set data (see modules/elsetSync.ts).
+  #hiddenSatnums: ReadonlySet<string> = new Set();
+
+  /**
+   * Satnums of every satellite the current activation asks for, ignoring the
+   * hidden filter.
+   *
+   * Ignoring it is the point: this is what the element-set window is fetched
+   * for, and that filter is derived FROM the window. Honouring it here would
+   * mean a satellite hidden once could never be asked about again, and so could
+   * never come back when the clock moved on.
+   */
+  enabledSatnums(): string[] {
+    const entries = activeTargetEntries({
+      entries: this.catalog.entries,
+      enabledTags: this.#desired.enabledTags,
+      enabledSatellites: this.#desired.enabledSatellites,
+      disabledSatellites: this.#desired.disabledSatellites,
+      trackedName: this.trackedSatellite || undefined,
+      pendingTrackedName: this.pendingTrackedSatellite,
+    });
+    return [...new Set([...entries.values()].map((entry) => entry.satnum))];
+  }
+
+  /**
+   * Apply the time-appropriate element sets for the current simulation time:
+   * `overrides` is the whole override state (satnum -> element set), and
+   * `hidden` the satnums with no element set valid at that time.
+   *
+   * Satellites whose element set really changed are rebuilt, because an Orbit —
+   * and the pass predictor and sampled trajectory built on it — is constructed
+   * from the record and cannot be re-pointed in place.
+   */
+  applyElsetOverrides(overrides: ReadonlyMap<string, GpRecord>, hidden: ReadonlySet<string>): void {
+    const changedKeys = this.catalog.applyRecordOverrides(overrides);
+    this.#hiddenSatnums = hidden;
+
+    // Tracking survives the rebuild: the collection holding the tracked entity
+    // is about to be disposed, and only its replacement can hold it again.
+    const tracked = this.trackedSatellite;
+    let rebuilt = false;
+    for (const key of changedKeys) {
+      const sat = this.#active.get(key);
+      if (sat === undefined) {
+        continue;
+      }
+      if (sat.isTracked) {
+        this.viewer.trackedEntity = undefined;
+      }
+      sat.dispose();
+      this.#active.delete(key);
+      rebuilt = true;
+    }
+    if (rebuilt && tracked) {
+      this.pendingTrackedSatellite = tracked;
+    }
+
+    // Always reconcile: even with no record change, `hidden` may have grown or
+    // shrunk, which adds or removes live satellites on its own.
+    this.#reconcileActive();
   }
 
   // Reconcile the live #active map against the activation target: dispose

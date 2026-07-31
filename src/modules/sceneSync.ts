@@ -19,6 +19,7 @@ import { useCesiumStore } from "../stores/cesium";
 import { useSatStore } from "../stores/sat";
 import type { CesiumController } from "./CesiumController";
 import { offlineFallback } from "./CesiumLayerProviders";
+import { createElsetSync } from "./elsetSync";
 import type { DesiredScene } from "./SatelliteManager";
 import type { Observer } from "./SkyView";
 import { toMinuteIso } from "./util/urlCodec";
@@ -199,7 +200,19 @@ export function startSceneSync(cc: CesiumController): void {
     trackedSatellite: satStore.trackedSatellite,
   });
 
-  watch(desired, (next) => cc.sats.reconcile(next), { deep: true, immediate: true });
+  // Which element sets are in force follows the clock and the activation, so it
+  // is resynced after both — after reconcile, because it asks the manager which
+  // satellites are enabled.
+  const elsets = createElsetSync(cc, () => cesiumStore.time);
+
+  watch(
+    desired,
+    (next) => {
+      cc.sats.reconcile(next);
+      elsets.sync();
+    },
+    { deep: true, immediate: true },
+  );
 
   // --- the clock ------------------------------------------------------------
   // Live by default: `time` is null and absent from the url, so a shared link
@@ -214,6 +227,7 @@ export function startSceneSync(cc: CesiumController): void {
       if (pinned !== null && pinned !== (clockMinute() ?? null)) {
         cc.setTime(pinned);
       }
+      elsets.sync();
     },
     { immediate: true },
   );
@@ -255,5 +269,9 @@ export function startSceneSync(cc: CesiumController): void {
   // Pinia — so a revision counter is what lets catalog-derived views recompute.
   cc.sats.onCatalogChange(() => {
     satStore.catalogRevision += 1;
+    // A group finishing its load brings satellites the current window was never
+    // fetched for, so they would sit on their CelesTrak element sets until the
+    // clock happened to move. Resync instead.
+    elsets.sync();
   });
 }

@@ -98,3 +98,33 @@ describe("isEnabledByTag", () => {
     expect(isEnabledByTag(DELTA, new Set(["Weather", "Science", "New"]))).toBe(false);
   });
 });
+
+describe("hiddenSatnums", () => {
+  // A satnum with no element set valid at the simulation time — not launched
+  // yet, or in one of the SCD2 chain's gaps.
+  const time = { hiddenSatnums: new Set(["1"]) };
+
+  test("a satellite with no valid element set is not activated by its tag", () => {
+    const target = activeTargetEntries({ entries: ALL, enabledTags: ["Weather"], enabledSatellites: [], ...time });
+    expect(keys(target)).toEqual(["2|BETA"]);
+  });
+
+  test("naming it explicitly does not bring it back", () => {
+    const target = activeTargetEntries({ entries: ALL, enabledTags: [], enabledSatellites: ["ALPHA"], ...time });
+    expect(keys(target)).toEqual([]);
+  });
+
+  test("tracking it does not bring it back either", () => {
+    // There is no way to ask for a satellite at a time it did not exist, so
+    // this beats every enable rule rather than being OR'd with them.
+    const target = activeTargetEntries({ entries: ALL, enabledTags: [], enabledSatellites: [], trackedName: "ALPHA", ...time });
+    expect(keys(target)).toEqual([]);
+    const pending = activeTargetEntries({ entries: ALL, enabledTags: [], enabledSatellites: [], pendingTrackedName: "ALPHA", ...time });
+    expect(keys(pending)).toEqual([]);
+  });
+
+  test("an empty set changes nothing", () => {
+    const target = activeTargetEntries({ entries: ALL, enabledTags: ["Weather"], enabledSatellites: [], hiddenSatnums: new Set() });
+    expect(keys(target)).toEqual(["1|ALPHA", "2|BETA"]);
+  });
+});

@@ -5,6 +5,7 @@
 
 import generatedConfig from "../config/satvis.generated.json" with { type: "json" };
 import {
+  buildLaunchDates,
   buildStatuses,
   collectSources,
   indexSatellitesByNoradId,
@@ -43,7 +44,11 @@ export async function refreshGroups(config: GroupsConfig, store: GroupStore, fet
   console.log(`gp refresh: start — ${defs.length} groups, ${collectSources(defs).length} sources`);
 
   const fetched = await fetchSources(defs, fetchImpl);
-  const evaluated = evaluateGroups(defs, toRecordsBySource(fetched));
+  const bySource = toRecordsBySource(fetched);
+  const evaluated = evaluateGroups(defs, bySource);
+  // Read from the same fetch results as the element sets — satcat sources ride
+  // the one rate-limited pass rather than opening a second one.
+  const launchDates = buildLaunchDates(defs, bySource);
   const previous = await store.readIndex();
   const statuses = buildStatuses(defs, evaluated, previous, now);
 
@@ -67,7 +72,7 @@ export async function refreshGroups(config: GroupsConfig, store: GroupStore, fet
       for (const warning of result.warnings) {
         console.warn(`gp refresh: ${def.name}: ${warning}`);
       }
-      const enriched = enrichRecords(result.records, table);
+      const enriched = enrichRecords(result.records, table, launchDates);
       for (const satnum of enriched.matched) {
         matchedSatnums.add(satnum);
       }

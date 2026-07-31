@@ -27,6 +27,11 @@
             <UIcon name="lucide:telescope" />
           </button>
         </UTooltip>
+        <UTooltip text="Simulation time">
+          <button type="button" class="cesium-button cesium-toolbar-button" @click="toggleMenu('time')">
+            <UIcon name="lucide:calendar-clock" />
+          </button>
+        </UTooltip>
         <UTooltip v-if="cc.minimalUI" text="Mobile">
           <button type="button" class="cesium-button cesium-toolbar-button" @click="toggleMenu('ios')">
             <UIcon name="lucide:smartphone" />
@@ -135,6 +140,27 @@
           </label>
         </template>
       </div>
+      <!-- Where the simulation starts. The field is UTC, matching every other
+           time the app shows and the `time` url parameter; datetime-local has no
+           zone of its own, so the value is read and written as UTC text. -->
+      <div v-show="menu.time" class="toolbarSwitches">
+        <div class="toolbarTitle">Simulation time</div>
+        <div class="toolbarContent">
+          <input v-model="timeInput" class="toolbarInput" type="datetime-local" step="60" aria-label="Simulation start time (UTC)" />
+          <div class="toolbarNote">UTC — currently {{ timeState }}</div>
+        </div>
+        <label class="toolbarSwitch">
+          <input type="button" @click="applyTime" />
+          Set start time
+        </label>
+        <!-- Back to following the present. Two steps and in this order: move the
+             clock first, then clear the pin — clearing it first would leave the
+             clock parked wherever it was, still stopped, and merely unpinned. -->
+        <label class="toolbarSwitch">
+          <input type="button" @click="resumeLive" />
+          Resume live
+        </label>
+      </div>
       <div v-show="menu.ios" class="toolbarSwitches">
         <div class="toolbarTitle">Mobile</div>
         <label class="toolbarSwitch">
@@ -228,19 +254,20 @@
 
 <script setup lang="ts">
 import { storeToRefs } from "pinia";
-import { computed, onMounted, reactive, ref } from "vue";
+import { computed, onMounted, reactive, ref, watch } from "vue";
 
 import { useGeolocation } from "../composables/useGeolocation";
 import { compassAvailable, useSkyCompass } from "../composables/useSkyCompass";
 import { SKY_MODE } from "../config/viewModes";
 import { DeviceDetect } from "../modules/util/DeviceDetect";
+import { toMinuteIso } from "../modules/util/urlCodec";
 import { useCesiumStore } from "../stores/cesium";
 import { useSatStore } from "../stores/sat";
 import EntityInfoPanel from "./EntityInfoPanel.vue";
 import SatelliteBrowser from "./SatelliteBrowser.vue";
 import SkyHud from "./SkyHud.vue";
 
-type MenuKey = "cat" | "sat" | "gs" | "map" | "view" | "ios" | "dbg";
+type MenuKey = "cat" | "sat" | "gs" | "map" | "view" | "time" | "ios" | "dbg";
 
 const cc = globalThis.cc;
 
@@ -250,13 +277,51 @@ const menu = reactive<Record<MenuKey, boolean>>({
   gs: false,
   map: false,
   view: false,
+  time: false,
   ios: false,
   dbg: false,
 });
 const showUI = ref(true);
 
 const cesiumStore = useCesiumStore();
-const { layers, terrainProvider, sceneMode, cameraMode, qualityPreset, showFps, pickMode } = storeToRefs(cesiumStore);
+const { layers, terrainProvider, sceneMode, cameraMode, qualityPreset, showFps, pickMode, time } = storeToRefs(cesiumStore);
+
+// The datetime-local field's own text. Held apart from the store rather than
+// v-modelled onto it, because the store's value is what the clock IS: binding
+// them would re-pin the clock on every keystroke, including the half-typed
+// years a date field emits while being edited.
+const timeInput = ref("");
+
+const timeState = computed(() => (time.value === null ? "live" : `pinned to ${time.value}`));
+
+// Seed the field on open, so it shows the moment being looked at rather than
+// whatever was typed and abandoned last time. `time` is null while live, and
+// then the present is the honest starting point.
+watch(
+  () => menu.time,
+  (open) => {
+    if (open) {
+      timeInput.value = (time.value ?? toMinuteIso(new Date()) ?? "").replace(/Z$/, "");
+    }
+  },
+);
+
+function applyTime(): void {
+  const value = timeInput.value.trim();
+  if (value === "") {
+    return;
+  }
+  // datetime-local yields zone-less text; the trailing Z is what declares it
+  // UTC, matching the field's label and the url parameter.
+  cesiumStore.setTime(`${value}Z`);
+  menu.time = false;
+}
+
+function resumeLive(): void {
+  cc.setTime(new Date());
+  cesiumStore.setTime(null);
+  menu.time = false;
+}
 
 // The checkbox list writes the whole array back. layers is read-only because
 // "at most one base layer" is an invariant of the list, so the write is routed

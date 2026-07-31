@@ -37,6 +37,14 @@ let highresProbe: Promise<boolean> | undefined;
  * situation an offline layer exists for. The answer is cached, since it cannot
  * change within a session.
  *
+ * The manifest is recognised by its content, not its status. A 200 does not mean
+ * the file is there: the Vite dev server answers a missing path with the SPA
+ * `index.html`, and a service worker's navigation fallback can do the same. On a
+ * 200-only check the probe concludes the imagery is present, no swap happens, and
+ * Cesium parses that HTML as XML — "Invalid XMLHttpRequest response type", thrown
+ * with the globe already black. That is the uninitialised-submodule symptom, and
+ * checking for the TMS root element is what keeps the fallback honest in dev.
+ *
  * Hardcoded to the one pair rather than expressed as a general capability of the
  * registry: this is the only provider backed by data that `pnpm install` does not
  * guarantee, and a framework for a single case is harder to read than the case.
@@ -46,7 +54,7 @@ export async function offlineFallback(layers: readonly string[]): Promise<string
     return undefined;
   }
   highresProbe ??= fetch(`${HIGHRES_NATURAL_EARTH}/tilemapresource.xml`)
-    .then((response) => response.ok)
+    .then(async (response) => (response.ok ? (await response.text()).includes("<TileMap") : false))
     .catch(() => false);
   if (await highresProbe) {
     return undefined;

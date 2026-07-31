@@ -130,8 +130,14 @@ describe("scheduled() refresh", () => {
       const request = new Request(input, init);
       const url = new URL(request.url);
       const isGp = url.pathname === "/NORAD/elements/gp.php" || url.pathname === "/NORAD/elements/supplemental/sup-gp.php";
-      if (request.method !== "GET" || url.origin !== "https://celestrak.org" || !isGp) {
+      // Satcat sources ride the same fetch pass but are a different endpoint and
+      // a different payload — read only for LAUNCH_DATE, never served.
+      const isSatcat = url.pathname === "/satcat/records.php";
+      if (request.method !== "GET" || url.origin !== "https://celestrak.org" || !(isGp || isSatcat)) {
         throw new Error(`unmocked fetch: ${request.method} ${request.url}`);
+      }
+      if (isSatcat) {
+        return new Response(JSON.stringify([{ NORAD_CAT_ID: 53807, OBJECT_NAME: "BLUEWALKER-3", LAUNCH_DATE: "2022-09-11" }]), { status: opts?.status ?? 200 });
       }
       const source = url.searchParams.get("GROUP") ?? url.searchParams.get("FILE") ?? "";
       return new Response(JSON.stringify(reply(source)), { status: opts?.status ?? 200 });

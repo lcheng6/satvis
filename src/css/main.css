@@ -65,6 +65,28 @@ body {
   margin: 5px;
 }
 
+/* A real, focusable field — unlike .toolbarSwitch input, which is hidden
+   because its label is the control. color-scheme: dark makes the browser's
+   own date/time picker chrome match the panel instead of rendering a white
+   popup over the globe. */
+.toolbarInput {
+  background-color: #303336;
+  border: 1px solid #ffffff40;
+  border-radius: 6px;
+  color: inherit;
+  color-scheme: dark;
+  display: block;
+  font: inherit;
+  padding: 3px 6px;
+  width: 100%;
+}
+
+.toolbarNote {
+  font-size: 0.85em;
+  margin-top: 4px;
+  opacity: 0.7;
+}
+
 .toolbarSwitch {
   background-color: #303336;
   border-radius: 8px;

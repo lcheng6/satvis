@@ -33,6 +33,48 @@ groups:
     sources: [{ celestrak: weather }]
   - name: eutelsat
     sources: [{ celestrak: eutelsat }]
+  # AST SpaceMobile's payloads, across three launches. Sourced by launch
+  # (INTDES) plus one CATNR rather than the whole `active` catalog: three small
+  # fetches instead of a multi-megabyte one for nine satellites. CelesTrak has
+  # no group for this operator, so these are plain url sources.
+  #
+  # The satellites rows below are what excludes the five debris objects that
+  # share the 2024-163 launch (SPACEMOBILE-00N DEB, 62369-62373).
+  #
+  # Names: upstream now calls the 2026-139 trio SPACEMOBILE-008/009/010, having
+  # settled what the request page listed as the provisional "BLUEBIRD 8/9/10",
+  # so they keep the upstream names and stay consistent with their five
+  # siblings. upstreamName is recorded on every row, so an upstream rename or a
+  # decay surfaces as a warning in /api/groups.json rather than a silent
+  # disappearance.
+  - name: ast-spacemobile
+    sources:
+      - { url: "https://celestrak.org/NORAD/elements/gp.php?CATNR=53807&FORMAT=JSON" }
+      - { url: "https://celestrak.org/NORAD/elements/gp.php?INTDES=2024-163&FORMAT=JSON" }
+      - { url: "https://celestrak.org/NORAD/elements/gp.php?INTDES=2026-139&FORMAT=JSON" }
+    # Satcat twins of the queries above, read only for LAUNCH_DATE. Needed
+    # because four of these satellites (53807, 69589-69591) have no rows at all
+    # in the Databricks elset view, so its own launch dates cannot reach them —
+    # and a CelesTrak element set will otherwise propagate backwards for years
+    # before the satellite existed.
+    satcatSources:
+      - { url: "https://celestrak.org/satcat/records.php?CATNR=53807&FORMAT=JSON" }
+      - { url: "https://celestrak.org/satcat/records.php?INTDES=2024-163&FORMAT=JSON" }
+      - { url: "https://celestrak.org/satcat/records.php?INTDES=2026-139&FORMAT=JSON" }
+    # No launch dates here on purpose: they are data, not configuration. The
+    # elset view carries a satcat LAUNCH column, and that is the authoritative
+    # source — see the window query in worker/src/databricks/elset.ts.
+    satellites:
+      # Hyphenated upstream, spaced in the request page — renamed to match.
+      - { noradId: 53807, upstreamName: BLUEWALKER-3, name: BLUEWALKER 3 }
+      - { noradId: 61047, upstreamName: SPACEMOBILE-001 }
+      - { noradId: 61048, upstreamName: SPACEMOBILE-002 }
+      - { noradId: 61045, upstreamName: SPACEMOBILE-003 }
+      - { noradId: 61049, upstreamName: SPACEMOBILE-004 }
+      - { noradId: 61046, upstreamName: SPACEMOBILE-005 }
+      - { noradId: 69589, upstreamName: SPACEMOBILE-008 }
+      - { noradId: 69590, upstreamName: SPACEMOBILE-009 }
+      - { noradId: 69591, upstreamName: SPACEMOBILE-010 }
 
 # Static per-satellite facts, matched against a record's NORAD_CAT_ID alone.
 # `name` is documentation only — it never takes part in matching.

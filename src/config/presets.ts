@@ -55,6 +55,9 @@ export const presets: Record<string, Preset> = {
       ["stations", ["Stations"]],
       ["weather", ["Weather"]],
       ["eutelsat", ["Eutelsat"]],
+      // Tag carries the operator's name with its space; only commas are barred
+      // from a tag, and the group name itself must stay url-safe.
+      ["ast-spacemobile", ["AST SpaceMobile"]],
     ],
   },
   ot: {

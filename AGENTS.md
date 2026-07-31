@@ -37,6 +37,23 @@ CI runs `lint`, then `test` (frontend + worker), then `build`.
   - Config is declarative and YAML: core config in `worker/src/config/satvis.core.yaml`, plugin config in `data/custom/<plugin>/satvis.yaml`. Each contributes two independent sections — `groups` (`sources`/`satellites`/`select`/`rename`/`include`/`extraRecordsFile`) and `satellites` (static per-satellite facts keyed by NORAD id). `pnpm --filter satvis-worker generate-groups` merges them into the gitignored `worker/src/config/satvis.generated.json`.
   - **Satellite metadata** (swath extents, sensor FOV, model URL, operator) is attached to each matching record **at refresh time**, under a lowercase `metadata` key, from the merged satellite table. There is no metadata endpoint and no browser-side rule matching: a record either carries the bag or the frontend applies its defaults (`src/config/satelliteMetadata.ts`). See `docs/adr/0002-static-satellite-metadata.md`.
   - **Worker-less mode**: `pnpm update-gp` runs the same evaluator and writes a static snapshot into `data/gp/` (gitignored). The app probes `/api/groups.json` and falls back to that snapshot.
+- **Databricks (element sets from Unity Catalog)**: `worker/src/databricks/` talks to the
+  SQL **Statement Execution REST API** over plain `fetch` — deliberately _not_ the
+  `@databricks/sql` npm driver, which speaks Thrift over Node sockets and cannot run on
+  workerd. `client.ts` submits, polls and walks result chunks; `elset.ts` resolves the
+  time-appropriate element set per satellite; `config.ts` resolves the connection from
+  env. Off unless configured, and a _partial_ configuration is a hard error rather than a
+  silent downgrade. See "Databricks configuration" below.
+- **Time-appropriate element sets**: while the clock is **pinned**, each enabled satellite is
+  propagated from the element set whose SCD2 validity interval contains that moment, and a
+  satellite with no such element set is not drawn at all. `elsetWindow.ts` fetches a
+  7-day window from `/api/elset/window` (bounds bucketed to 6 h so scrubbing mostly resolves
+  locally and refetches hit the worker's edge cache); `elsetSync.ts` turns the clock into
+  overrides plus an unlaunched set; `SatelliteCatalog` holds an override **beside**
+  `baseRecord` (metadata falls back to the base — an override is a bare element set);
+  `SatelliteManager.applyElsetOverrides` rebuilds the affected satellites, because `Orbit`
+  is constructed from the record. **Live time is left alone** — CelesTrak is hours old at
+  most. See "Databricks configuration" below.
 - **Data assets**: `data/` also contains Cesium assets (imagery, textures, stars) and 3D-model plugins under `data/custom/`. Copied into `dist/` at build time via `vite-plugin-static-copy`.
 - Entrypoints: `index.html`, `embedded.html`, `test.html` (all configured as Vite MPA inputs).
 
@@ -65,6 +82,102 @@ cd worker
 wrangler dev --remote --test-scheduled
 curl "http://localhost:8080/__scheduled?cron=23+*%2F3+*+*+*"
 ```
+
+### Databricks configuration
+
+Four vars in `worker/wrangler.jsonc` plus one secret. Locally they live in
+`worker/.dev.vars` (gitignored — copy `worker/.dev.vars.example`); in production the
+token is `wrangler secret put DATABRICKS_TOKEN` and never a var.
+
+| Name                      | Kind       | Meaning                                                      |
+| ------------------------- | ---------- | ------------------------------------------------------------ |
+| `DATABRICKS_HOST`         | var        | Workspace URL, no trailing slash                             |
+| `DATABRICKS_WAREHOUSE_ID` | var        | SQL warehouse to run statements on                           |
+| `DATABRICKS_TOKEN`        | **secret** | PAT or OAuth access token                                    |
+| `DATABRICKS_ELSET_TABLE`  | var        | Overrides the SCD2 elset view; blank uses the default        |
+| `DATABRICKS_PROBE`        | var        | `"1"` exposes `GET /api/databricks/probe`; off in production |
+
+All blank → "not configured", and the worker serves CelesTrak data exactly as before.
+Some-but-not-all set → startup-time error, because a half-set connection is a deployment
+mistake, not a feature flag.
+
+`GET /api/databricks/probe?satnos=<ids>&at=<iso8601>` is the connectivity check: it
+resolves the time-appropriate element set for each id and reports epoch, epoch age,
+provenance and the ids the view had nothing for. It is unauthenticated and every call
+spins a metered warehouse, so it is disabled unless `DATABRICKS_PROBE=1` — local only.
+Expect ~16 s on a cold warehouse, ~7 s warm.
+
+**Selecting an element set by time** (`worker/src/databricks/elset.ts`) — the SCD2 validity
+match, with a half-open interval:
+
+```
+__START_AT <= t  AND  (__END_AT IS NULL OR t < __END_AT)
+```
+
+The start is inclusive so an instant landing exactly on an epoch is resolvable and belongs
+to exactly one row. **A satellite with no matching row is not drawn at that time.** Know
+what that costs before changing it: the chain is not continuous — 763 of 2,679 sampled rows
+are followed by a gap (0 overlap, longest ~19.8 days), which puts 41-46% of an AST
+satellite's history inside a gap, and **1,824 of 6,451 satellites have no open row at all**
+(1,698 of them active in the last 30 days — dangling closes upstream, not decays), so they
+are invisible at present time. Satellites therefore blink in and out as the clock moves.
+The gap-immune alternative, should it be wanted, is to fall back to the greatest
+`__START_AT` ≤ t when no interval matches.
+
+One more verified fact about this table, useful whichever rule is in force: `__START_AT`
+**is** the TLE epoch — across 1,145 sampled rows the epoch parsed out of `line1` and
+`__START_AT` differ by 0 s. So a row's validity begins exactly at its own epoch.
+
+**Launch dates are data, never config.** Two sources, because neither covers everything:
+
+- The view's satcat **`LAUNCH`** column, for satellites the elset table has history for.
+  Do not confuse it with a satellite's first `__START_AT`: the AST satellites launched
+  2024-09-12 but the table's history for them begins 2025-04, so "not launched yet" and
+  "no history that far back" are different facts, reported as different resolutions
+  (`before-launch` vs `before-first`).
+- **CelesTrak SATCAT**, via a group's `satcatSources` (see below), for satellites the
+  elset table has _no rows for at all_ — which is 4 of the 9 AST satellites. Without it
+  they resolve to `unknown`, keep their CelesTrak element set, and are drawn at every
+  simulation time including years before they launched.
+
+### `satcatSources` — launch dates for satellites the elset table cannot reach
+
+A group may declare `satcatSources` alongside `sources`. They are fetched by the same
+rate-limited pass (`collectSources` includes them) but read **only** for `LAUNCH_DATE`,
+which `buildLaunchDates` turns into a satnum→date table and `enrichRecords` attaches as
+`metadata.launchDate`. Nothing from a satcat source is ever served: `evaluateGroups` looks
+at `def.sources` alone, so a satcat payload cannot become a record.
+
+Give each element-set query a satcat twin — the endpoints take the same parameters:
+
+```yaml
+sources:
+  - { url: "https://celestrak.org/NORAD/elements/gp.php?INTDES=2026-139&FORMAT=JSON" }
+satcatSources:
+  - { url: "https://celestrak.org/satcat/records.php?INTDES=2026-139&FORMAT=JSON" }
+```
+
+A failed satcat fetch is a warning, not a group failure: a missing launch date costs
+pre-launch visibility correctness, not the satellite. A `launchDate` set explicitly in a
+config `satellites` row wins over the fetched value.
+
+Variable-length id lists travel as one comma-joined **bound parameter**
+(`array_contains(split(:satNos, ','), ...)`), never interpolated — the API binds scalars
+only. The table name _is_ interpolated (no API can bind an identifier) and so is validated
+against `^[A-Za-z0-9_]+(\.[A-Za-z0-9_]+){0,2}$` first.
+
+`GET /api/elset/window?satnos=<ids>&from=<iso>&to=<iso>` is the route the app itself uses.
+It returns every element set whose **validity interval overlaps** the window — which is
+exactly the set that can answer any instant in it, a row starting before the window but
+still in force included by the same condition — plus each satellite's `firstEpoch`. A
+satellite with a `firstEpoch` but no rows in range had not launched yet; one listed in
+`uncovered` is absent from the table entirely and must keep its CelesTrak element set.
+Unlike the probe this route is live in production, so it is capped (≤200 satellites,
+≤90-day span) and edge-cached for 15 min on normalized parameters.
+
+Note `worker/test/` runs with `.dev.vars` loaded, so real credentials may be present in
+the test env. The Databricks tests set the whole `DATABRICKS_*` triple explicitly and
+assert no request escapes.
 
 ### Private plugin config (`data/custom/<plugin>/satvis.yaml`)
 
