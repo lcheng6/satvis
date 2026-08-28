@@ -106,7 +106,7 @@ async function handleRefresh(request: Request, env: Env): Promise<Response> {
 // Satellites the probe resolves when the caller names none. A convenience
 // default for the AST SpaceMobile working set — NOT configuration: nothing else
 // reads it, and a real group belongs in satvis.core.yaml.
-const PROBE_DEFAULT_SATNOS = [53807, 61045, 61046, 61047, 61048, 61049, 69589, 69590, 69591];
+const PROBE_DEFAULT_SATNOS = [53807, 61045, 61046, 61047, 61048, 61049, 67232, 69589, 69590, 69591, 100240, 100241, 100242];
 // Bound on how many satellites one probe call may resolve, so the endpoint
 // cannot be turned into a bulk extractor against a metered warehouse.
 const PROBE_MAX_SATNOS = 50;
@@ -160,7 +160,7 @@ async function handleDatabricksProbe(request: Request, env: Env): Promise<Respon
 
   const started = Date.now();
   try {
-    const rows = await fetchElsets(settings, settings.elsetTable, { satNos, asOf });
+    const rows = await fetchElsets(settings, settings.elsetTable, settings.satcatTable, { satNos, asOf });
     const found = new Set(rows.map((row) => row.satNo));
     return jsonResponse(
       {
@@ -290,7 +290,7 @@ async function handleElsetWindow(request: Request, env: Env, ctx: ExecutionConte
 
   const started = Date.now();
   try {
-    const result = await fetchElsetWindow(settings, settings.elsetTable, { satNos, from, to });
+    const result = await fetchElsetWindow(settings, settings.elsetTable, settings.satcatTable, { satNos, from, to });
     const response = jsonResponse(
       {
         configured: true,

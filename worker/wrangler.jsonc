@@ -37,8 +37,11 @@
   "vars": {
     "DATABRICKS_HOST": "",
     "DATABRICKS_WAREHOUSE_ID": "",
-    // Overrides the SCD2 elset view; blank uses DEFAULT_ELSET_TABLE.
+    // Overrides the SCD2 elset table; blank uses DEFAULT_ELSET_TABLE.
     "DATABRICKS_ELSET_TABLE": "",
+    // Overrides the satcat dimension joined LEFT for names and launch dates;
+    // blank uses DEFAULT_SATCAT_TABLE.
+    "DATABRICKS_SATCAT_TABLE": "",
     // "1" exposes GET /api/databricks/probe. Off in production: the endpoint is
     // unauthenticated and every call spins a metered SQL warehouse.
     "DATABRICKS_PROBE": "0",

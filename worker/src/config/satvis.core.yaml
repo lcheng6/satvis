@@ -33,37 +33,55 @@ groups:
     sources: [{ celestrak: weather }]
   - name: eutelsat
     sources: [{ celestrak: eutelsat }]
-  # AST SpaceMobile's payloads, across three launches. Sourced by launch
-  # (INTDES) plus one CATNR rather than the whole `active` catalog: three small
-  # fetches instead of a multi-megabyte one for nine satellites. CelesTrak has
-  # no group for this operator, so these are plain url sources.
+  # AST SpaceMobile's payloads, across five launches. Sourced by launch
+  # (INTDES) plus one CATNR rather than the whole `active` catalog: five small
+  # fetches instead of a multi-megabyte one for thirteen satellites. CelesTrak
+  # has no group for this operator, so these are plain url sources.
   #
-  # The satellites rows below are what excludes the five debris objects that
-  # share the 2024-163 launch (SPACEMOBILE-00N DEB, 62369-62373).
+  # CelesTrak supplies the ROSTER (which satellites exist, their names and
+  # launch dates); Databricks supplies the ELEMENT SETS actually propagated, at
+  # every simulation time including live — see src/modules/elsetSync.ts. That
+  # split is deliberate: the warehouse is authoritative for orbital state and
+  # holds full SCD2 history, but its satcat dimension went stale on 2026-04-13
+  # and so cannot name or date anything launched since.
   #
-  # Names: upstream now calls the 2026-139 trio SPACEMOBILE-008/009/010, having
-  # settled what the request page listed as the provisional "BLUEBIRD 8/9/10",
-  # so they keep the upstream names and stay consistent with their five
-  # siblings. upstreamName is recorded on every row, so an upstream rename or a
-  # decay surfaces as a warning in /api/groups.json rather than a silent
-  # disappearance.
+  # The satellites rows below are what excludes the non-payloads that share
+  # these launches: five debris objects on 2024-163 (SPACEMOBILE-00N DEB,
+  # 62369-62373) and the LVM3 R/B upper stage on 2025-309 (67233).
+  #
+  # Names: upstream calls the 2026-139 trio SPACEMOBILE-008/009/010 and the
+  # 2026-179 trio SPACEMOBILE-011/012/013 — note 2026-179 runs BACKWARDS, piece
+  # A is -013 and piece C is -011. These settle what the request page listed as
+  # provisional "BLUEBIRD" numbers. upstreamName is recorded on every row, so an
+  # upstream rename or a decay surfaces as a warning in /api/groups.json rather
+  # than a silent disappearance.
+  #
+  # SPACEMOBILE-007 (68765, 2026-085A) is deliberately absent: it launched
+  # 2026-04-19 and decayed 2026-04-20, CelesTrak serves no GP record for it
+  # ("No GP data found"), and its single Databricks row was never closed — so
+  # including it would draw a reentered satellite at every time after launch.
   - name: ast-spacemobile
     sources:
       - { url: "https://celestrak.org/NORAD/elements/gp.php?CATNR=53807&FORMAT=JSON" }
       - { url: "https://celestrak.org/NORAD/elements/gp.php?INTDES=2024-163&FORMAT=JSON" }
+      - { url: "https://celestrak.org/NORAD/elements/gp.php?INTDES=2025-309&FORMAT=JSON" }
       - { url: "https://celestrak.org/NORAD/elements/gp.php?INTDES=2026-139&FORMAT=JSON" }
+      - { url: "https://celestrak.org/NORAD/elements/gp.php?INTDES=2026-179&FORMAT=JSON" }
     # Satcat twins of the queries above, read only for LAUNCH_DATE. Needed
-    # because four of these satellites (53807, 69589-69591) have no rows at all
-    # in the Databricks elset view, so its own launch dates cannot reach them —
+    # because Databricks' own satcat dimension stops at 2026-04-13, so it
+    # carries no launch date for 53807, the 2026-139 trio or the 2026-179 trio —
     # and a CelesTrak element set will otherwise propagate backwards for years
     # before the satellite existed.
     satcatSources:
       - { url: "https://celestrak.org/satcat/records.php?CATNR=53807&FORMAT=JSON" }
       - { url: "https://celestrak.org/satcat/records.php?INTDES=2024-163&FORMAT=JSON" }
+      - { url: "https://celestrak.org/satcat/records.php?INTDES=2025-309&FORMAT=JSON" }
       - { url: "https://celestrak.org/satcat/records.php?INTDES=2026-139&FORMAT=JSON" }
-    # No launch dates here on purpose: they are data, not configuration. The
-    # elset view carries a satcat LAUNCH column, and that is the authoritative
-    # source — see the window query in worker/src/databricks/elset.ts.
+      - { url: "https://celestrak.org/satcat/records.php?INTDES=2026-179&FORMAT=JSON" }
+    # No launch dates here on purpose: they are data, not configuration. They
+    # come from the satcatSources above, and from the Databricks satcat LAUNCH
+    # column where it reaches — see the window query in
+    # worker/src/databricks/elset.ts.
     satellites:
       # Hyphenated upstream, spaced in the request page — renamed to match.
       - { noradId: 53807, upstreamName: BLUEWALKER-3, name: BLUEWALKER 3 }
@@ -72,9 +90,14 @@ groups:
       - { noradId: 61045, upstreamName: SPACEMOBILE-003 }
       - { noradId: 61049, upstreamName: SPACEMOBILE-004 }
       - { noradId: 61046, upstreamName: SPACEMOBILE-005 }
+      - { noradId: 67232, upstreamName: SPACEMOBILE-006 }
       - { noradId: 69589, upstreamName: SPACEMOBILE-008 }
       - { noradId: 69590, upstreamName: SPACEMOBILE-009 }
       - { noradId: 69591, upstreamName: SPACEMOBILE-010 }
+      # 2026-179, launched 2026-08-05. Piece A is -013, piece C is -011.
+      - { noradId: 100242, upstreamName: SPACEMOBILE-011 }
+      - { noradId: 100241, upstreamName: SPACEMOBILE-012 }
+      - { noradId: 100240, upstreamName: SPACEMOBILE-013 }
 
 # Static per-satellite facts, matched against a record's NORAD_CAT_ID alone.
 # `name` is documentation only — it never takes part in matching.

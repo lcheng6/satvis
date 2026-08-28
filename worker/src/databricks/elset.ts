@@ -21,10 +21,15 @@
 //     exactly (__END_AT == the next __START_AT), 763 are followed by a GAP
 //     (__END_AT < the next __START_AT), and 0 overlap. For the AST SpaceMobile
 //     satellites those gaps cover 41-46% of each satellite's history, with the
-//     longest single gap ~19.8 days, and 61045 has no open row at all — so it
-//     matches nothing at present time. Under this rule that means invisible.
+//     longest single gap ~19.8 days. Under this rule a gap means invisible.
 //     Selecting the greatest __START_AT <= t instead would be immune to the
 //     gaps; it is deliberately NOT what this implements.
+//  3. satNo is null on 41% of rows (11,896,863 of 28,715,420), and on 5,377 of
+//     the 38,118 currently-open rows — 14%. idOnOrbit carries the number on
+//     those rows and the TLE lines are intact, so they are good data behind a
+//     null key. BLUEWALKER 3's current open row is one of them. Keying on satNo
+//     alone therefore hides one satellite in seven at present time; every query
+//     here keys on SAT_KEY_SQL below instead.
 
 import type { TleRecord } from "../gp/types.ts";
 import { query, rowsToObjects, type DatabricksConfig } from "./client.ts";
@@ -53,6 +58,26 @@ export interface ElsetQueryOptions {
   timeoutMs?: number;
 }
 
+// The satellite key every query filters, groups and partitions on.
+//
+// satNo first, so a row that has it keeps using it; idOnOrbit only where satNo
+// is null. The reverse order would be wrong: idOnOrbit is not always the
+// catalog number — some rows carry a UUID there (satNo 81102-81104) — whereas
+// on a null-satNo row it reliably holds the number. Written once and shared so
+// the point lookup, the window fetch and their GROUP BY can never disagree
+// about what identifies a satellite.
+const SAT_KEY_SQL = "coalesce(cast(e.satNo AS string), e.idOnOrbit)";
+
+// elset LEFT JOIN satcat. LEFT, not INNER: satcat is a stale dimension (latest
+// LAUNCH 2026-03-30) and must contribute names and launch dates without
+// deciding which satellites exist. The joined-view equivalent of this query
+// returns nothing at all for BLUEWALKER 3 or any satellite catalogued since
+// April.
+function fromClause(elsetTable: string, satcatTable: string): string {
+  return `${assertTableIdentifier(elsetTable)} e
+      LEFT JOIN ${assertTableIdentifier(satcatTable)} s ON e.idOnOrbit = s.NORAD_CAT_ID`;
+}
+
 // The row whose SCD2 validity interval contains :asOf, one per satellite.
 //
 // `array_contains(split(:satNos, ','), ...)` is how a variable-length IN list
@@ -66,19 +91,23 @@ export interface ElsetQueryOptions {
 // row_number() still guards against a satellite matching twice. It cannot
 // happen in this table (0 overlaps measured), but a duplicate would otherwise
 // silently double a satellite rather than being reduced to one answer.
-function buildStatement(table: string): string {
+function buildStatement(elsetTable: string, satcatTable: string): string {
   return `
     SELECT satNo, OBJECT_NAME, OBJECT_ID, line1, line2, __START_AT, __END_AT, source, dataMode
     FROM (
       SELECT
-        satNo, OBJECT_NAME, OBJECT_ID, line1, line2, __START_AT, __END_AT, source, dataMode,
-        row_number() OVER (PARTITION BY satNo ORDER BY to_timestamp(__START_AT) DESC) AS rn
-      FROM ${assertTableIdentifier(table)}
-      WHERE array_contains(split(:satNos, ','), cast(satNo AS string))
-        AND to_timestamp(__START_AT) <= :asOf
-        AND (__END_AT IS NULL OR :asOf < to_timestamp(__END_AT))
-        AND line1 IS NOT NULL
-        AND line2 IS NOT NULL
+        ${SAT_KEY_SQL} AS satNo,
+        s.OBJECT_NAME AS OBJECT_NAME, s.OBJECT_ID AS OBJECT_ID,
+        e.line1 AS line1, e.line2 AS line2,
+        e.__START_AT AS __START_AT, e.__END_AT AS __END_AT,
+        e.source AS source, e.dataMode AS dataMode,
+        row_number() OVER (PARTITION BY ${SAT_KEY_SQL} ORDER BY to_timestamp(e.__START_AT) DESC) AS rn
+      FROM ${fromClause(elsetTable, satcatTable)}
+      WHERE array_contains(split(:satNos, ','), ${SAT_KEY_SQL})
+        AND to_timestamp(e.__START_AT) <= :asOf
+        AND (e.__END_AT IS NULL OR :asOf < to_timestamp(e.__END_AT))
+        AND e.line1 IS NOT NULL
+        AND e.line2 IS NOT NULL
     )
     WHERE rn = 1
     ORDER BY satNo
@@ -89,14 +118,14 @@ function buildStatement(table: string): string {
 // Satellites with no row at or before `asOf` are simply absent from the result
 // — the caller decides whether that is an error (see the missing-id report in
 // the probe endpoint).
-export async function fetchElsets(config: DatabricksConfig, table: string, options: ElsetQueryOptions): Promise<ElsetRow[]> {
+export async function fetchElsets(config: DatabricksConfig, table: string, satcatTable: string, options: ElsetQueryOptions): Promise<ElsetRow[]> {
   const satNos = [...new Set(options.satNos)];
   if (satNos.length === 0) {
     return [];
   }
   const asOf = options.asOf ?? new Date();
   const result = await query(config, {
-    statement: buildStatement(table),
+    statement: buildStatement(table, satcatTable),
     parameters: [
       { name: "satNos", value: satNos.join(","), type: "STRING" },
       // The API parses a TIMESTAMP parameter from an ISO-8601 string; trimming
@@ -189,23 +218,30 @@ export interface ElsetWindowOptions {
 // window still comes back — carrying its firstEpoch and no rows, which is the
 // "not launched yet at this time" case the caller must render as absent rather
 // than as missing data.
-function buildWindowStatement(table: string): string {
+function buildWindowStatement(elsetTable: string, satcatTable: string): string {
   return `
     WITH src AS (
-      SELECT satNo, OBJECT_NAME, OBJECT_ID, line1, line2, __START_AT, __END_AT, source, dataMode, LAUNCH,
-             to_timestamp(__START_AT) AS start_ts,
-             CASE WHEN __END_AT IS NULL THEN NULL ELSE to_timestamp(__END_AT) END AS end_ts
-      FROM ${assertTableIdentifier(table)}
-      WHERE array_contains(split(:satNos, ','), cast(satNo AS string))
-        AND line1 IS NOT NULL
-        AND line2 IS NOT NULL
+      SELECT ${SAT_KEY_SQL} AS satNo,
+             s.OBJECT_NAME AS OBJECT_NAME, s.OBJECT_ID AS OBJECT_ID, s.LAUNCH AS LAUNCH,
+             e.line1 AS line1, e.line2 AS line2,
+             e.__START_AT AS __START_AT, e.__END_AT AS __END_AT,
+             e.source AS source, e.dataMode AS dataMode,
+             to_timestamp(e.__START_AT) AS start_ts,
+             CASE WHEN e.__END_AT IS NULL THEN NULL ELSE to_timestamp(e.__END_AT) END AS end_ts
+      FROM ${fromClause(elsetTable, satcatTable)}
+      WHERE array_contains(split(:satNos, ','), ${SAT_KEY_SQL})
+        AND e.line1 IS NOT NULL
+        AND e.line2 IS NOT NULL
     ),
     firsts AS (
-      -- LAUNCH comes from the satcat side of the view and is the authoritative
-      -- launch date. It is not derivable from element sets: a TLE propagates
-      -- backwards past its own launch perfectly happily, and this table's
-      -- history for a satellite can begin long after it reached orbit (the AST
-      -- satellites launched 2024-09-12 but have no rows before 2025-04).
+      -- LAUNCH comes from the satcat LEFT join and is the authoritative launch
+      -- date where it exists. It is not derivable from element sets: a TLE
+      -- propagates backwards past its own launch perfectly happily, and this
+      -- table's history for a satellite can begin long after it reached orbit
+      -- (the AST satellites launched 2024-09-12 but have no rows before
+      -- 2025-04). NULL for anything catalogued after satcat went stale — those
+      -- satellites get their launch date from the group's CelesTrak
+      -- satcatSources instead.
       SELECT satNo, min(__START_AT) AS first_epoch, max(LAUNCH) AS launch_date
       FROM src GROUP BY satNo
     ),
@@ -234,13 +270,13 @@ function toSparkTimestamp(value: Date): string {
 // Fetch every element set covering [from, to] for the requested satellites, in
 // a single statement, so scrubbing time inside the window costs no further
 // round trip.
-export async function fetchElsetWindow(config: DatabricksConfig, table: string, options: ElsetWindowOptions): Promise<ElsetWindowResult> {
+export async function fetchElsetWindow(config: DatabricksConfig, table: string, satcatTable: string, options: ElsetWindowOptions): Promise<ElsetWindowResult> {
   const satNos = [...new Set(options.satNos)];
   if (satNos.length === 0) {
     return { entries: [], uncovered: [] };
   }
   const result = await query(config, {
-    statement: buildWindowStatement(table),
+    statement: buildWindowStatement(table, satcatTable),
     parameters: [
       { name: "satNos", value: satNos.join(","), type: "STRING" },
       { name: "windowFrom", value: toSparkTimestamp(options.from), type: "TIMESTAMP" },

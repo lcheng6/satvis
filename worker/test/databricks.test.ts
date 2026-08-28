@@ -7,6 +7,7 @@ import { fetchElsets, fetchElsetWindow, toTleRecord, type ElsetRow } from "../sr
 
 const CONFIG: DatabricksConfig = { host: "https://example.cloud.databricks.com", warehouseId: "wh123", token: "secret-token" };
 const TABLE = "cat.sch.elsets";
+const SATCAT_TABLE = "cat.sch.satcat";
 
 // The two real TLE lines of SPACEMOBILE-001 at epoch 2026-07-29T01:30:04Z, so
 // the record mapping is exercised against data of the right shape and width.
@@ -163,7 +164,7 @@ describe("fetchElsets", () => {
   it("selects the latest row at or before asOf, deduping ids", async () => {
     fetchSpy.mockImplementation(async () => jsonOk(elsetRows(["61047", "SPACEMOBILE-001", "2024-163C", LINE1, LINE2, "2026-07-29T01:30:04.002048Z", null, "18th SPCS", "REAL"])));
 
-    const rows = await fetchElsets(CONFIG, TABLE, { satNos: [61047, 61047, 61048], asOf: new Date("2026-07-30T00:00:00Z") });
+    const rows = await fetchElsets(CONFIG, TABLE, SATCAT_TABLE, { satNos: [61047, 61047, 61048], asOf: new Date("2026-07-30T00:00:00Z") });
 
     expect(rows).toEqual<ElsetRow[]>([
       {
@@ -183,9 +184,17 @@ describe("fetchElsets", () => {
     const statement = String(body["statement"]);
     // The SCD2 validity match, with a half-open interval: start inclusive, end
     // exclusive, and a null end meaning still in force.
-    expect(statement).toContain("to_timestamp(__START_AT) <= :asOf");
-    expect(statement).toContain("(__END_AT IS NULL OR :asOf < to_timestamp(__END_AT))");
+    expect(statement).toContain("to_timestamp(e.__START_AT) <= :asOf");
+    expect(statement).toContain("(e.__END_AT IS NULL OR :asOf < to_timestamp(e.__END_AT))");
     expect(statement).toContain(TABLE);
+    // Satellites are keyed on satNo falling back to idOnOrbit, never satNo
+    // alone: satNo is null on 14% of the table's currently-open rows, and
+    // keying on it drops those satellites entirely (BLUEWALKER 3 is one).
+    expect(statement).toContain("coalesce(cast(e.satNo AS string), e.idOnOrbit)");
+    expect(statement).not.toContain("array_contains(split(:satNos, ','), cast(satNo AS string))");
+    // satcat is joined LEFT, so a satellite it has never heard of still
+    // resolves its element sets — it simply carries no name or launch date.
+    expect(statement).toContain(`LEFT JOIN ${SATCAT_TABLE}`);
     expect(body["parameters"]).toEqual([
       { name: "satNos", value: "61047,61048", type: "STRING" },
       { name: "asOf", value: "2026-07-30 00:00:00", type: "TIMESTAMP" },
@@ -193,7 +202,7 @@ describe("fetchElsets", () => {
   });
 
   it("short-circuits without a request when no satellites are asked for", async () => {
-    expect(await fetchElsets(CONFIG, TABLE, { satNos: [] })).toEqual([]);
+    expect(await fetchElsets(CONFIG, TABLE, SATCAT_TABLE, { satNos: [] })).toEqual([]);
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 
@@ -207,7 +216,7 @@ describe("fetchElsets", () => {
       ),
     );
 
-    const rows = await fetchElsets(CONFIG, TABLE, { satNos: [61047, 61048] });
+    const rows = await fetchElsets(CONFIG, TABLE, SATCAT_TABLE, { satNos: [61047, 61048] });
     expect(rows.map((row) => row.satNo)).toEqual([61047]);
   });
 
@@ -257,7 +266,7 @@ describe("fetchElsetWindow", () => {
       ),
     );
 
-    const result = await fetchElsetWindow(CONFIG, TABLE, { satNos: [61047], from: new Date("2026-07-28T00:00:00Z"), to: new Date("2026-07-30T00:00:00Z") });
+    const result = await fetchElsetWindow(CONFIG, TABLE, SATCAT_TABLE, { satNos: [61047], from: new Date("2026-07-28T00:00:00Z"), to: new Date("2026-07-30T00:00:00Z") });
 
     expect(result.uncovered).toEqual([]);
     expect(result.entries).toHaveLength(1);
@@ -287,7 +296,7 @@ describe("fetchElsetWindow", () => {
     // before the window, because the window predates its first element set.
     fetchSpy.mockImplementation(async () => jsonOk(windowRows(["69589", "2026-06-18T00:00:00Z", "2026-06-17", null, null, null, null, null, null, null, null])));
 
-    const result = await fetchElsetWindow(CONFIG, TABLE, { satNos: [69589], from: new Date("2026-03-01T00:00:00Z"), to: new Date("2026-03-08T00:00:00Z") });
+    const result = await fetchElsetWindow(CONFIG, TABLE, SATCAT_TABLE, { satNos: [69589], from: new Date("2026-03-01T00:00:00Z"), to: new Date("2026-03-08T00:00:00Z") });
 
     expect(result.uncovered).toEqual([]);
     // The satcat launch date rides along even when no element set does — it is
@@ -300,7 +309,7 @@ describe("fetchElsetWindow", () => {
       jsonOk(windowRows(["61047", "2025-04-11T09:59:46Z", "2024-09-12", "SPACEMOBILE-001", "2024-163C", LINE1, LINE2, "2026-07-29T01:30:04Z", null, null, null])),
     );
 
-    const result = await fetchElsetWindow(CONFIG, TABLE, { satNos: [61047, 53807], from: new Date("2026-07-28T00:00:00Z"), to: new Date("2026-07-30T00:00:00Z") });
+    const result = await fetchElsetWindow(CONFIG, TABLE, SATCAT_TABLE, { satNos: [61047, 53807], from: new Date("2026-07-28T00:00:00Z"), to: new Date("2026-07-30T00:00:00Z") });
 
     // 53807 is absent from the table entirely — not "not launched yet", so the
     // caller must leave it on its CelesTrak element set rather than hide it.
@@ -309,7 +318,7 @@ describe("fetchElsetWindow", () => {
   });
 
   it("short-circuits without a request when no satellites are asked for", async () => {
-    expect(await fetchElsetWindow(CONFIG, TABLE, { satNos: [], from: new Date(), to: new Date() })).toEqual({ entries: [], uncovered: [] });
+    expect(await fetchElsetWindow(CONFIG, TABLE, SATCAT_TABLE, { satNos: [], from: new Date(), to: new Date() })).toEqual({ entries: [], uncovered: [] });
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 });

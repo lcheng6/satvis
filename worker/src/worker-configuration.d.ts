@@ -7,6 +7,7 @@ interface __BaseEnv_Env {
 	DATABRICKS_WAREHOUSE_ID: string;
 	DATABRICKS_TOKEN: string;
 	DATABRICKS_ELSET_TABLE: string;
+	DATABRICKS_SATCAT_TABLE: string;
 	DATABRICKS_PROBE: string;
 }
 declare namespace Cloudflare {

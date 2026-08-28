@@ -18,6 +18,7 @@ DATABRICKS_TOKEN=
 
 # Optional: override the SCD2 element-set view (blank uses the built-in default).
 DATABRICKS_ELSET_TABLE=
+DATABRICKS_SATCAT_TABLE=
 
 # "1" exposes GET /api/databricks/probe. Local only.
 DATABRICKS_PROBE=1

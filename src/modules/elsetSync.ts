@@ -1,13 +1,23 @@
 // Keeps the element sets in force appropriate to the simulation time.
 //
-// While the clock is pinned, each enabled satellite is propagated from the
-// element set whose epoch is the latest at or before that moment, fetched from
-// Databricks a window at a time; a satellite whose first-ever element set is
-// later than the moment is not drawn at all, because it was not in orbit yet.
+// Databricks is the PRIMARY source of orbital state. Each enabled satellite is
+// propagated from the element set whose SCD2 validity interval contains the
+// simulation time, fetched a window at a time; CelesTrak's element set is the
+// fallback for whatever the warehouse cannot answer. This applies at live time
+// too, not only while the clock is pinned — the warehouse's open row is the
+// current element set, and preferring it is what "primary" means.
 //
-// Live time is deliberately left alone. CelesTrak element sets are hours old at
-// most, so an override would be the same answer bought with a warehouse query —
-// returning to live therefore drops every override rather than refreshing them.
+// The one asymmetry, deliberate: WHAT AN UNRESOLVED SATELLITE MEANS depends on
+// whether the clock is pinned.
+//
+//   pinned — hidden. Per tasking 4: no element set valid at that instant means
+//            the satellite is not drawn, whether it had not launched yet or the
+//            instant fell in one of the chain's gaps.
+//   live   — left on its CelesTrak element set. At the present moment a missing
+//            row is a warehouse artifact (a dangling SCD2 close — 5,377 of the
+//            catalog's open rows are affected), never evidence the satellite
+//            left orbit. Deleting a demonstrably-orbiting satellite from the
+//            live view on that basis would be wrong.
 //
 // One-way, like the rest of sceneSync: the clock decides, the element sets
 // follow. Nothing here writes back to the store.
@@ -52,11 +62,12 @@ export function createElsetSync(cc: CesiumController, pinnedTime: () => string |
     return hidden;
   }
 
-  function apply(resolved: ElsetWindow | undefined, timeMs: number | undefined, launchHidden: ReadonlySet<string> = new Set()): void {
+  function apply(resolved: ElsetWindow | undefined, timeMs: number | undefined, launchHidden: ReadonlySet<string> = new Set(), live = false): void {
     const overrides = new Map<string, GpRecord>();
     const hidden = new Set<string>(launchHidden);
     // Split only so the gap case can be reported: both are hidden.
     let gapCount = 0;
+    let fallbackCount = 0;
 
     if (resolved !== undefined && timeMs !== undefined) {
       for (const satnum of resolved.requested) {
@@ -67,9 +78,15 @@ export function createElsetSync(cc: CesiumController, pinnedTime: () => string |
           // a key nothing looks up. Only the two lines are being replaced.
           overrides.set(satnum, { kind: "tle", name: satnum, line1: resolution.line1, line2: resolution.line2 });
         } else if (hidesSatellite(resolution)) {
-          hidden.add(satnum);
-          if (resolution.kind === "no-valid-entry") {
-            gapCount++;
+          // Live: keep the satellite on CelesTrak rather than hiding it. See
+          // the asymmetry note at the top of this file.
+          if (live) {
+            fallbackCount++;
+          } else {
+            hidden.add(satnum);
+            if (resolution.kind === "no-valid-entry") {
+              gapCount++;
+            }
           }
         }
       }
@@ -90,22 +107,19 @@ export function createElsetSync(cc: CesiumController, pinnedTime: () => string |
       // row's validity interval contains this instant.
       console.info(`Time-appropriate element sets: ${gapCount} satellite(s) hidden — no validity interval covers this time (SCD2 chain gap).`);
     }
+    if (fallbackCount > 0) {
+      console.info(`Time-appropriate element sets: ${fallbackCount} satellite(s) kept on their CelesTrak element set — Databricks has no open row for them now.`);
+    }
     cc.sats.applyElsetOverrides(overrides, hidden);
   }
 
   function sync(): void {
     const pinned = pinnedTime();
-    if (pinned === null) {
-      // Back to live: drop every override and every hidden satellite.
-      inFlight?.abort();
-      inFlight = undefined;
-      generation++;
-      window = undefined;
-      apply(undefined, undefined);
-      return;
-    }
-
-    const timeMs = Date.parse(pinned);
+    // Live is a simulation time like any other — the present one. It resolves
+    // against Databricks the same way a pinned time does; only the meaning of
+    // an unresolved satellite differs (see the header).
+    const live = pinned === null;
+    const timeMs = live ? Date.now() : Date.parse(pinned);
     if (!Number.isFinite(timeMs)) {
       return;
     }
@@ -128,14 +142,14 @@ export function createElsetSync(cc: CesiumController, pinnedTime: () => string |
       if (appliedSignature !== "") {
         console.warn(`Time-appropriate element sets skipped: ${satnums.length} satellites enabled, limit is ${MAX_WINDOW_SATNOS}.`);
       }
-      apply(undefined, undefined, launchHidden);
+      apply(undefined, undefined, launchHidden, live);
       return;
     }
 
     // The bucketed window usually still covers a scrub, so most clock changes
     // resolve locally and never reach the network.
     if (windowCovers(window, timeMs, satnums)) {
-      apply(window, timeMs, launchHidden);
+      apply(window, timeMs, launchHidden, live);
       return;
     }
 
@@ -149,7 +163,7 @@ export function createElsetSync(cc: CesiumController, pinnedTime: () => string |
           return;
         }
         window = fetched;
-        apply(fetched, timeMs, launchHidden);
+        apply(fetched, timeMs, launchHidden, live);
       })
       .catch((error: unknown) => {
         if (mine !== generation || controller.signal.aborted) {

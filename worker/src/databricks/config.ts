@@ -8,9 +8,26 @@
 
 import type { DatabricksConfig } from "./client.ts";
 
-// The SCD2 element-set view. Overridable per-environment, so a fork can point
+// The SCD2 element-set table. Overridable per-environment, so a fork can point
 // at its own table without a code change.
-export const DEFAULT_ELSET_TABLE = "space_force_demo_v2.dev_analyst_enablement_and_retrieval.elset_scd2_with_satcat";
+//
+// This is the BASE table, not the elset_scd2_with_satcat view. The view is
+// `elset_scd2 JOIN satcat_scd1 ON idOnOrbit = NORAD_CAT_ID` — an INNER join,
+// and the satcat side is stale (last ingest 2026-04-13, latest LAUNCH
+// 2026-03-30). Every satellite catalogued since then falls out of the view
+// entirely: it holds 6,450 satellites against the base table's 38,066, and has
+// no rows at all for BLUEWALKER 3 (53807), SPACEMOBILE-008/009/010
+// (69589-69591) or SPACEMOBILE-011/012/013 (100240-100242).
+//
+// Reading the base table and joining satcat with a LEFT join keeps the names
+// and launch dates where satcat has them, without letting a stale dimension
+// decide which satellites exist.
+export const DEFAULT_ELSET_TABLE = "space_force_demo_v2.dev_analyst_enablement_and_retrieval.elset_scd2";
+
+// The satcat dimension, joined LEFT for OBJECT_NAME / OBJECT_ID / LAUNCH only.
+// Never filters: a satellite missing here still resolves its element sets, it
+// just carries no name or launch date from Databricks.
+export const DEFAULT_SATCAT_TABLE = "space_force_demo_v2.dev_analyst_enablement_and_retrieval.satcat_scd1";
 
 // A table identifier can never be a bound parameter, so it is interpolated —
 // and therefore must be validated. Unity Catalog names are
@@ -19,6 +36,7 @@ const TABLE_IDENTIFIER_RE = /^[A-Za-z0-9_]+(\.[A-Za-z0-9_]+){0,2}$/;
 
 export interface DatabricksSettings extends DatabricksConfig {
   elsetTable: string;
+  satcatTable: string;
 }
 
 // Assert a fully-qualified name is safe to interpolate into SQL.
@@ -57,5 +75,6 @@ export function resolveDatabricks(env: Env): DatabricksSettings | null {
     warehouseId: warehouseId!,
     token: token!,
     elsetTable: assertTableIdentifier(env.DATABRICKS_ELSET_TABLE?.trim() || DEFAULT_ELSET_TABLE),
+    satcatTable: assertTableIdentifier(env.DATABRICKS_SATCAT_TABLE?.trim() || DEFAULT_SATCAT_TABLE),
   };
 }
